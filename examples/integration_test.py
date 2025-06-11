@@ -136,6 +136,11 @@ class Test(unittest.IsolatedAsyncioTestCase):
         )
         await your_coin.main(moon_coin_path)
 
+    async def test_turbo_transfer(self):
+        from . import turbo_transfer
+
+        await turbo_transfer.main()
+
     @classmethod
     def tearDownClass(self):
         if os.getenv("APTOS_TEST_USE_EXISTING_NETWORK"):

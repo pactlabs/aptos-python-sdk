@@ -22,6 +22,7 @@ from .transactions import (
     SignedTransaction,
     TransactionArgument,
     TransactionPayload,
+    convert_payload_to_turbo_payload,
 )
 from .type_tag import StructTag, TypeTag
 
@@ -688,21 +689,42 @@ class RestClient:
         sender: Account | AccountAddress,
         payload: TransactionPayload,
         sequence_number: Optional[int] = None,
+        replay_nonce: Optional[int] = None,
     ) -> RawTransaction:
+        """
+        Create a BCS transaction. Can create either regular or turbo transactions.
+
+        Args:
+            sender: The account or address sending the transaction
+            payload: The transaction payload (Script or EntryFunction)
+            sequence_number: Sequence number for regular transactions (ignored if replay_nonce is provided)
+            replay_nonce: Optional replay nonce for turbo (orderless) transactions
+
+        Returns:
+            RawTransaction: The constructed transaction (regular or turbo)
+        """
         if isinstance(sender, Account):
             sender_address = sender.address()
         else:
             sender_address = sender
 
-        sequence_number = (
-            sequence_number
-            if sequence_number is not None
-            else await self.account_sequence_number(sender_address)
-        )
+        # If replay_nonce is provided, create a turbo transaction
+        if replay_nonce is not None:
+            turbo_payload = convert_payload_to_turbo_payload(payload, replay_nonce)
+            sequence_number = 0xdeadbeef
+            actual_payload = turbo_payload
+        else:
+            sequence_number = (
+                sequence_number
+                if sequence_number is not None
+                else await self.account_sequence_number(sender_address)
+            )
+            actual_payload = payload
+
         return RawTransaction(
             sender_address,
             sequence_number,
-            payload,
+            actual_payload,
             self.client_config.max_gas_amount,
             self.client_config.gas_unit_price,
             int(time.time()) + self.client_config.expiration_ttl,
@@ -714,9 +736,22 @@ class RestClient:
         sender: Account,
         payload: TransactionPayload,
         sequence_number: Optional[int] = None,
+        replay_nonce: Optional[int] = None,
     ) -> SignedTransaction:
+        """
+        Create a signed BCS transaction. Can create either regular or turbo transactions.
+
+        Args:
+            sender: The account sending the transaction
+            payload: The transaction payload (Script or EntryFunction)
+            sequence_number: Sequence number for regular transactions (ignored if replay_nonce is provided)
+            replay_nonce: Optional replay nonce for turbo (orderless) transactions
+
+        Returns:
+            SignedTransaction: The signed transaction (regular or turbo)
+        """
         raw_transaction = await self.create_bcs_transaction(
-            sender, payload, sequence_number
+            sender, payload, sequence_number, replay_nonce
         )
         authenticator = sender.sign_transaction(raw_transaction)
         return SignedTransaction(raw_transaction, authenticator)
@@ -732,7 +767,21 @@ class RestClient:
         recipient: AccountAddress,
         amount: int,
         sequence_number: Optional[int] = None,
+        replay_nonce: Optional[int] = None,
     ) -> str:
+        """
+        Transfer APT coins using either regular or turbo transactions.
+
+        Args:
+            sender: The account sending the transfer
+            recipient: The recipient account address
+            amount: The amount to transfer (in octas)
+            sequence_number: Sequence number for regular transactions (ignored if replay_nonce is provided)
+            replay_nonce: Optional replay nonce for turbo (orderless) transactions
+
+        Returns:
+            str: The transaction hash
+        """
         transaction_arguments = [
             TransactionArgument(recipient, Serializer.struct),
             TransactionArgument(amount, Serializer.u64),
@@ -746,7 +795,7 @@ class RestClient:
         )
 
         signed_transaction = await self.create_bcs_signed_transaction(
-            sender, TransactionPayload(payload), sequence_number=sequence_number
+            sender, TransactionPayload(payload), sequence_number=sequence_number, replay_nonce=replay_nonce
         )
         return await self.submit_bcs_transaction(signed_transaction)  # <:!:bcs_transfer
 
