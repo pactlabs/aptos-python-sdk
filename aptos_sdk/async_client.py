@@ -713,6 +713,8 @@ class RestClient:
             turbo_payload = convert_payload_to_turbo_payload(payload, replay_nonce)
             sequence_number = 0xdeadbeef
             actual_payload = turbo_payload
+            # Turbo transactions have a maximum expiration of 60 seconds
+            expiration_timestamp = int(time.time()) + 60
         else:
             sequence_number = (
                 sequence_number
@@ -720,6 +722,7 @@ class RestClient:
                 else await self.account_sequence_number(sender_address)
             )
             actual_payload = payload
+            expiration_timestamp = int(time.time()) + self.client_config.expiration_ttl
 
         return RawTransaction(
             sender_address,
@@ -727,7 +730,7 @@ class RestClient:
             actual_payload,
             self.client_config.max_gas_amount,
             self.client_config.gas_unit_price,
-            int(time.time()) + self.client_config.expiration_ttl,
+            expiration_timestamp,
             await self.chain_id(),
         )
 
