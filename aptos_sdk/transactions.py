@@ -253,6 +253,8 @@ class TransactionPayload:
     SCRIPT: int = 0
     MODULE_BUNDLE: int = 1
     SCRIPT_FUNCTION: int = 2
+    MULTISIG: int = 3
+    PAYLOAD: int = 4
 
     variant: int
     value: Any
@@ -264,6 +266,8 @@ class TransactionPayload:
             self.variant = TransactionPayload.MODULE_BUNDLE
         elif isinstance(payload, EntryFunction):
             self.variant = TransactionPayload.SCRIPT_FUNCTION
+        elif isinstance(payload, TransactionInnerPayload):
+            self.variant = TransactionPayload.PAYLOAD
         else:
             raise Exception("Invalid type")
         self.value = payload
@@ -286,6 +290,8 @@ class TransactionPayload:
             payload = ModuleBundle.deserialize(deserializer)
         elif variant == TransactionPayload.SCRIPT_FUNCTION:
             payload = EntryFunction.deserialize(deserializer)
+        elif variant == TransactionPayload.PAYLOAD:
+            payload = TransactionInnerPayload.deserialize(deserializer)
         else:
             raise Exception("Invalid type")
 
@@ -526,6 +532,218 @@ class TransactionArgument:
         ser = Serializer()
         self.encoder(ser, self.value)
         return ser.output()
+
+
+class TransactionInnerPayload(Deserializable, Serializable):
+    """
+    Represents any transaction payload that can be submitted to the Aptos chain for execution.
+    
+    This is specifically required for turbo transactions, but can be used for any transaction payload.
+    """
+    
+    @staticmethod
+    def deserialize(deserializer: Deserializer) -> TransactionInnerPayload:
+        variant = deserializer.uleb128()
+        if variant == TransactionInnerPayloadVariants.V1:
+            return TransactionInnerPayloadV1.deserialize(deserializer)
+        else:
+            raise Exception(f"Unknown variant index for TransactionInnerPayload: {variant}")
+
+
+class TransactionInnerPayloadVariants:
+    V1: int = 0
+
+
+class TransactionInnerPayloadV1(TransactionInnerPayload):
+    executable: TransactionExecutable
+    extra_config: TransactionExtraConfig
+
+    def __init__(self, executable: TransactionExecutable, extra_config: TransactionExtraConfig):
+        self.executable = executable
+        self.extra_config = extra_config
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TransactionInnerPayloadV1):
+            return NotImplemented
+        return self.executable == other.executable and self.extra_config == other.extra_config
+
+    def serialize(self, serializer: Serializer) -> None:
+        serializer.uleb128(TransactionInnerPayloadVariants.V1)
+        self.executable.serialize(serializer)
+        self.extra_config.serialize(serializer)
+
+    @staticmethod
+    def deserialize(deserializer: Deserializer) -> TransactionInnerPayloadV1:
+        executable = TransactionExecutable.deserialize(deserializer)
+        extra_config = TransactionExtraConfig.deserialize(deserializer)
+        return TransactionInnerPayloadV1(executable, extra_config)
+
+
+class TransactionExecutable(Deserializable, Serializable):
+    """
+    Executable types for transactions, which can be either a script or an entry function.
+    
+    Empty is reserved for Multisig voting transactions, which do not have an executable payload.
+    """
+    
+    @staticmethod
+    def deserialize(deserializer: Deserializer) -> TransactionExecutable:
+        variant = deserializer.uleb128()
+        if variant == TransactionExecutableVariants.SCRIPT:
+            return TransactionExecutableScript.deserialize(deserializer)
+        elif variant == TransactionExecutableVariants.ENTRY_FUNCTION:
+            return TransactionExecutableEntryFunction.deserialize(deserializer)
+        elif variant == TransactionExecutableVariants.EMPTY:
+            return TransactionExecutableEmpty.deserialize(deserializer)
+        else:
+            raise Exception(f"Unknown variant index for TransactionExecutable: {variant}")
+
+
+class TransactionExecutableVariants:
+    SCRIPT: int = 0
+    ENTRY_FUNCTION: int = 1
+    EMPTY: int = 2
+
+
+class TransactionExecutableScript(TransactionExecutable):
+    script: Script
+
+    def __init__(self, script: Script):
+        self.script = script
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TransactionExecutableScript):
+            return NotImplemented
+        return self.script == other.script
+
+    def serialize(self, serializer: Serializer) -> None:
+        serializer.uleb128(TransactionExecutableVariants.SCRIPT)
+        self.script.serialize(serializer)
+
+    @staticmethod
+    def deserialize(deserializer: Deserializer) -> TransactionExecutableScript:
+        script = Script.deserialize(deserializer)
+        return TransactionExecutableScript(script)
+
+
+class TransactionExecutableEntryFunction(TransactionExecutable):
+    entry_function: EntryFunction
+
+    def __init__(self, entry_function: EntryFunction):
+        self.entry_function = entry_function
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TransactionExecutableEntryFunction):
+            return NotImplemented
+        return self.entry_function == other.entry_function
+
+    def serialize(self, serializer: Serializer) -> None:
+        serializer.uleb128(TransactionExecutableVariants.ENTRY_FUNCTION)
+        self.entry_function.serialize(serializer)
+
+    @staticmethod
+    def deserialize(deserializer: Deserializer) -> TransactionExecutableEntryFunction:
+        entry_function = EntryFunction.deserialize(deserializer)
+        return TransactionExecutableEntryFunction(entry_function)
+
+
+class TransactionExecutableEmpty(TransactionExecutable):
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TransactionExecutableEmpty):
+            return NotImplemented
+        return True
+
+    def serialize(self, serializer: Serializer) -> None:
+        serializer.uleb128(TransactionExecutableVariants.EMPTY)
+
+    @staticmethod
+    def deserialize(deserializer: Deserializer) -> TransactionExecutableEmpty:
+        return TransactionExecutableEmpty()
+
+
+class TransactionExtraConfig(Deserializable, Serializable):
+    """
+    Variants of transaction extra configurations, which can include additional settings or parameters.
+    """
+    
+    @staticmethod
+    def deserialize(deserializer: Deserializer) -> TransactionExtraConfig:
+        variant = deserializer.uleb128()
+        if variant == TransactionExtraConfigVariants.V1:
+            return TransactionExtraConfigV1.deserialize(deserializer)
+        else:
+            raise Exception(f"Unknown variant index for TransactionExtraConfig: {variant}")
+
+
+class TransactionExtraConfigVariants:
+    V1: int = 0
+
+
+class TransactionExtraConfigV1(TransactionExtraConfig):
+    multisig_address: Optional[AccountAddress]
+    replay_protection_nonce: Optional[int]
+
+    def __init__(self, multisig_address: Optional[AccountAddress] = None, replay_protection_nonce: Optional[int] = None):
+        self.multisig_address = multisig_address
+        self.replay_protection_nonce = replay_protection_nonce
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TransactionExtraConfigV1):
+            return NotImplemented
+        return (
+            self.multisig_address == other.multisig_address
+            and self.replay_protection_nonce == other.replay_protection_nonce
+        )
+
+    def serialize(self, serializer: Serializer) -> None:
+        serializer.uleb128(TransactionExtraConfigVariants.V1)
+        if self.multisig_address is not None:
+            serializer.bool(True)
+            self.multisig_address.serialize(serializer)
+        else:
+            serializer.bool(False)
+        
+        if self.replay_protection_nonce is not None:
+            serializer.bool(True)
+            serializer.u64(self.replay_protection_nonce)
+        else:
+            serializer.bool(False)
+
+    @staticmethod
+    def deserialize(deserializer: Deserializer) -> TransactionExtraConfigV1:
+        multisig_address = None
+        if deserializer.bool():
+            multisig_address = AccountAddress.deserialize(deserializer)
+        
+        replay_protection_nonce = None
+        if deserializer.bool():
+            replay_protection_nonce = deserializer.u64()
+        
+        return TransactionExtraConfigV1(multisig_address, replay_protection_nonce)
+
+
+def convert_payload_to_turbo_payload(payload: TransactionPayload, replay_nonce: Optional[int] = None) -> TransactionPayload:
+    """
+    Converts a regular TransactionPayload to a turbo transaction payload.
+    
+    Args:
+        payload: The original transaction payload (Script or EntryFunction)
+        replay_nonce: Optional replay protection nonce for orderless transactions
+    
+    Returns:
+        TransactionPayload: A new payload wrapped in TransactionInnerPayloadV1 for turbo transactions
+    """
+    if payload.variant == TransactionPayload.SCRIPT:
+        executable = TransactionExecutableScript(payload.value)
+    elif payload.variant == TransactionPayload.SCRIPT_FUNCTION:
+        executable = TransactionExecutableEntryFunction(payload.value)
+    else:
+        raise Exception(f"Unsupported payload type for turbo transactions: {payload.variant}")
+    
+    extra_config = TransactionExtraConfigV1(None, replay_nonce)
+    inner_payload = TransactionInnerPayloadV1(executable, extra_config)
+    
+    return TransactionPayload(inner_payload)
 
 
 class SignedTransaction:
@@ -899,3 +1117,219 @@ class Test(unittest.TestCase):
         self.assertEqual(ser.output().hex(), input_ma)
 
         self.assertTrue(isinstance(raw_txn_with_data, MultiAgentRawTransaction))
+
+    def test_turbo_transaction_creation(self):
+        # Test creating a turbo transaction payload
+        private_key = ed25519.PrivateKey.random()
+        public_key = private_key.public_key()
+        account_address = AccountAddress.from_key(public_key)
+
+        another_private_key = ed25519.PrivateKey.random()
+        another_public_key = another_private_key.public_key()
+        recipient_address = AccountAddress.from_key(another_public_key)
+
+        # Create a regular entry function payload
+        transaction_arguments = [
+            TransactionArgument(recipient_address, Serializer.struct),
+            TransactionArgument(5000, Serializer.u64),
+        ]
+
+        entry_function = EntryFunction.natural(
+            "0x1::coin",
+            "transfer",
+            [TypeTag(StructTag.from_str("0x1::aptos_coin::AptosCoin"))],
+            transaction_arguments,
+        )
+        
+        regular_payload = TransactionPayload(entry_function)
+        
+        # Convert to turbo transaction with a replay nonce
+        replay_nonce = 12345
+        turbo_payload = convert_payload_to_turbo_payload(regular_payload, replay_nonce)
+        
+        # Verify the turbo payload structure
+        self.assertEqual(turbo_payload.variant, TransactionPayload.PAYLOAD)
+        self.assertTrue(isinstance(turbo_payload.value, TransactionInnerPayloadV1))
+        
+        inner_payload = turbo_payload.value
+        self.assertTrue(isinstance(inner_payload.executable, TransactionExecutableEntryFunction))
+        self.assertTrue(isinstance(inner_payload.extra_config, TransactionExtraConfigV1))
+        self.assertEqual(inner_payload.extra_config.replay_protection_nonce, replay_nonce)
+        self.assertIsNone(inner_payload.extra_config.multisig_address)
+
+        # Test serialization and deserialization
+        serializer = Serializer()
+        turbo_payload.serialize(serializer)
+        serialized_bytes = serializer.output()
+        
+        deserializer = Deserializer(serialized_bytes)
+        deserialized_payload = TransactionPayload.deserialize(deserializer)
+        
+        self.assertEqual(turbo_payload.variant, deserialized_payload.variant)
+        self.assertTrue(isinstance(deserialized_payload.value, TransactionInnerPayloadV1))
+        
+        deserialized_inner = deserialized_payload.value
+        self.assertEqual(inner_payload.extra_config.replay_protection_nonce, 
+                        deserialized_inner.extra_config.replay_protection_nonce)
+
+    def test_turbo_transaction_script_payload(self):
+        # Test creating a turbo transaction with a script payload
+        script_code = b'\x00\x01\x02\x03'  # dummy bytecode
+        script = Script(script_code, [], [])
+        script_payload = TransactionPayload(script)
+        
+        replay_nonce = 54321
+        turbo_payload = convert_payload_to_turbo_payload(script_payload, replay_nonce)
+        
+        # Verify the turbo payload structure
+        self.assertEqual(turbo_payload.variant, TransactionPayload.PAYLOAD)
+        self.assertTrue(isinstance(turbo_payload.value, TransactionInnerPayloadV1))
+        
+        inner_payload = turbo_payload.value
+        self.assertTrue(isinstance(inner_payload.executable, TransactionExecutableScript))
+        self.assertEqual(inner_payload.executable.script.code, script_code)
+        self.assertEqual(inner_payload.extra_config.replay_protection_nonce, replay_nonce)
+
+    def test_turbo_transaction_with_multisig(self):
+        # Test creating a turbo transaction with multisig address
+        multisig_address = AccountAddress.from_str("0x0000000000000000000000000000000000000000000000000000000000000123")
+        
+        entry_function = EntryFunction.natural("0x1::coin", "transfer", [], [])
+        regular_payload = TransactionPayload(entry_function)
+        
+        # Manually create turbo payload with multisig address
+        executable = TransactionExecutableEntryFunction(entry_function)
+        extra_config = TransactionExtraConfigV1(multisig_address, 99999)
+        inner_payload = TransactionInnerPayloadV1(executable, extra_config)
+        turbo_payload = TransactionPayload(inner_payload)
+        
+        # Verify the structure
+        self.assertEqual(turbo_payload.variant, TransactionPayload.PAYLOAD)
+        inner = turbo_payload.value
+        self.assertEqual(inner.extra_config.multisig_address, multisig_address)
+        self.assertEqual(inner.extra_config.replay_protection_nonce, 99999)
+
+    def test_payload_variants(self):
+        """Test that all payload variants are correctly defined"""
+        self.assertEqual(TransactionPayload.SCRIPT, 0)
+        self.assertEqual(TransactionPayload.MODULE_BUNDLE, 1)
+        self.assertEqual(TransactionPayload.SCRIPT_FUNCTION, 2)
+        self.assertEqual(TransactionPayload.MULTISIG, 3)
+        self.assertEqual(TransactionPayload.PAYLOAD, 4)
+
+    def test_typescript_sdk_compatibility(self):
+        """Test compatibility with TypeScript SDK bytecode format"""
+        # This is the exact hex from the TypeScript SDK test for a turbo transaction
+        TURBO_TXN = "0x04000100000000000000000000000000000000000000000000000000000000000000010d6170746f735f6163636f756e74087472616e73666572000220bd3c821fc733b9e0a022c7fa2fe24e5a5a0c5b66c9624d5a63ea735628818f1008e8030000000000000000010001000000000000"
+
+        # Convert hex to bytes
+        turbo_bytes = bytes.fromhex(TURBO_TXN[2:])  # Remove 0x prefix
+
+        # Deserialize using our implementation
+        deserializer = Deserializer(turbo_bytes)
+        payload = TransactionPayload.deserialize(deserializer)
+
+        # Verify it's a turbo transaction
+        self.assertEqual(payload.variant, TransactionPayload.PAYLOAD)
+        self.assertIsInstance(payload.value, TransactionInnerPayloadV1)
+
+        inner = payload.value
+        self.assertIsInstance(inner.executable, TransactionExecutableEntryFunction)
+        self.assertIsInstance(inner.extra_config, TransactionExtraConfigV1)
+
+        # Verify the entry function details
+        entry_func = inner.executable.entry_function
+        self.assertEqual(entry_func.function, "transfer")
+        self.assertEqual(entry_func.module.name, "aptos_account")
+
+        # Test serialization roundtrip
+        serializer = Serializer()
+        payload.serialize(serializer)
+        serialized_bytes = serializer.output()
+
+        # Test that we get the same bytes back
+        self.assertEqual(
+            turbo_bytes,
+            serialized_bytes,
+            "Serialization roundtrip should produce identical bytes"
+        )
+
+    def test_building_turbo_like_typescript(self):
+        """Test building a turbo transaction exactly like the TypeScript SDK"""
+        # Build EntryFunction like TypeScript: EntryFunction.build("0x1::aptos_account", "transfer", [], [])
+        module_id = ModuleId(AccountAddress.from_str("0x1"), "aptos_account")
+        entry_function = EntryFunction(module_id, "transfer", [], [])  # Empty type args and function args
+
+        # Build the turbo payload structure exactly like TypeScript
+        executable = TransactionExecutableEntryFunction(entry_function)
+        extra_config = TransactionExtraConfigV1()  # Empty extra config like TypeScript
+        inner_payload = TransactionInnerPayloadV1(executable, extra_config)
+        turbo_payload = TransactionPayload(inner_payload)
+
+        # Verify structure
+        self.assertEqual(turbo_payload.variant, TransactionPayload.PAYLOAD)
+        self.assertIsInstance(turbo_payload.value, TransactionInnerPayloadV1)
+        self.assertIsInstance(turbo_payload.value.executable, TransactionExecutableEntryFunction)
+        self.assertIsInstance(turbo_payload.value.extra_config, TransactionExtraConfigV1)
+
+        # Verify the entry function
+        ef = turbo_payload.value.executable.entry_function
+        self.assertEqual(ef.function, "transfer")
+        self.assertEqual(ef.module.name, "aptos_account")
+        self.assertEqual(len(ef.ty_args), 0)
+        self.assertEqual(len(ef.args), 0)
+
+        # Verify empty extra config
+        ec = turbo_payload.value.extra_config
+        self.assertIsNone(ec.multisig_address)
+        self.assertIsNone(ec.replay_protection_nonce)
+
+    def test_convert_payload_to_turbo_payload_function(self):
+        """Test the convert_payload_to_turbo_payload helper function"""
+        # Test with entry function
+        entry_function = EntryFunction.natural("0x1::coin", "transfer", [], [])
+        regular_payload = TransactionPayload(entry_function)
+        replay_nonce = 12345
+        turbo_payload = convert_payload_to_turbo_payload(regular_payload, replay_nonce)
+
+        self.assertEqual(turbo_payload.variant, TransactionPayload.PAYLOAD)
+        inner = turbo_payload.value
+        self.assertIsInstance(inner.executable, TransactionExecutableEntryFunction)
+        self.assertEqual(inner.extra_config.replay_protection_nonce, replay_nonce)
+
+        # Test with script
+        script = Script(b'\x00\x01\x02\x03', [], [])
+        script_payload = TransactionPayload(script)
+        turbo_script_payload = convert_payload_to_turbo_payload(script_payload, 54321)
+
+        self.assertEqual(turbo_script_payload.variant, TransactionPayload.PAYLOAD)
+        script_inner = turbo_script_payload.value
+        self.assertIsInstance(script_inner.executable, TransactionExecutableScript)
+        self.assertEqual(script_inner.extra_config.replay_protection_nonce, 54321)
+
+    def test_serialization_comparison(self):
+        """Test that regular and turbo transactions serialize differently"""
+        # Regular transaction
+        entry_function = EntryFunction.natural("0x1::coin", "transfer", [], [])
+        regular_payload = TransactionPayload(entry_function)
+        
+        serializer = Serializer()
+        regular_payload.serialize(serializer)
+        regular_bytes = serializer.output()
+
+        # Turbo transaction
+        turbo_payload = convert_payload_to_turbo_payload(regular_payload, 12345)
+        serializer = Serializer()
+        turbo_payload.serialize(serializer)
+        turbo_bytes = serializer.output()
+
+        # Verify they're different but both valid
+        self.assertNotEqual(regular_bytes, turbo_bytes)
+        self.assertGreater(len(turbo_bytes), len(regular_bytes))  # Turbo should be larger
+
+        # Verify both can be deserialized
+        regular_deserialized = TransactionPayload.deserialize(Deserializer(regular_bytes))
+        turbo_deserialized = TransactionPayload.deserialize(Deserializer(turbo_bytes))
+
+        self.assertEqual(regular_deserialized.variant, TransactionPayload.SCRIPT_FUNCTION)
+        self.assertEqual(turbo_deserialized.variant, TransactionPayload.PAYLOAD)
